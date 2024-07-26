@@ -1,0 +1,91 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:23.09-py3
+
+%post
+    apt-get update && apt-get install -y --no-install-recommends \
+        bzip2 \
+        cabextract \
+        iputils-ping \
+        pbzip2 \
+        pv \
+        cmake \
+        ninja-build \
+        g++ \
+        git \
+        wget \
+        unzip \
+        golang \
+        python3-pip \
+        libhdf5-dev \
+        pkg-config \
+        libssl-dev \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+    # Set CUDA environment variables
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+    export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+    echo "export CUDA_HOME=/usr/local/cuda" >> /etc/profile.d/cuda.sh
+    echo "export PATH=\$CUDA_HOME/bin:\$PATH" >> /etc/profile.d/cuda.sh
+    echo "export LD_LIBRARY_PATH=\$CUDA_HOME/lib64:\$LD_LIBRARY_PATH" >> /etc/profile.d/cuda.sh
+
+    # Build Bazelisk from source
+    export GO111MODULE=on
+    git clone https://github.com/bazelbuild/bazelisk.git
+    cd bazelisk
+    go build -o /usr/local/bin/bazel
+
+    # Install TensorFlow from source to get all necessary headers
+    cd /usr/local
+    wget https://github.com/tensorflow/tensorflow/archive/refs/tags/v2.12.0.tar.gz
+    tar -xzf v2.12.0.tar.gz
+    mv tensorflow-2.12.0 tensorflow
+    cd tensorflow
+    ./configure
+    bazel build //tensorflow/tools/pip_package:build_pip_package
+    ./bazel-bin/tensorflow/tools/pip_package/build_pip_package /tmp/tensorflow_pkg
+    pip install /tmp/tensorflow_pkg/tensorflow-2.12.0*.whl
+
+    # Ensure necessary TensorFlow headers are available
+    mkdir -p /usr/local/lib/python3.10/dist-packages/tensorflow/include/third_party/gpus/cuda/include/
+    cp -r /usr/local/cuda/include/* /usr/local/lib/python3.10/dist-packages/tensorflow/include/third_party/gpus/cuda/include/
+    cp -r /usr/local/tensorflow/tensorflow/compiler/xla/stream_executor/gpu/* /usr/local/lib/python3.10/dist-packages/tensorflow/include/tensorflow/compiler/xla/stream_executor/gpu/
+
+    cd /workspace
+    git clone https://github.com/attardi/wikiextractor.git
+    cd wikiextractor
+    git checkout e4abb4cbd019b0257824ee47c23dd163919b731b
+
+    # Clone and install Transformer Engine
+    cd /workspace
+    git clone --recursive https://github.com/NVIDIA/TransformerEngine.git
+    cd TransformerEngine
+    git checkout b8ba734
+    git submodule update --init --recursive
+    pip install .
+
+%environment
+    export BERT_PREP_WORKING_DIR=/workspace/bert/data
+    export PYTHONPATH=/workspace/bert
+    export CUDA_HOME=/usr/local/cuda
+    export PATH=$CUDA_HOME/bin:$PATH
+    export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+%files
+    requirements.txt /workspace/bert/requirements.txt
+    . /workspace/bert
+
+%post
+    cd /workspace/bert
+    pip install --no-cache-dir -r requirements.txt
+
+    cd /workspace/bert/mhalib
+    python setup.py build
+    cp build/lib*/mhalib* ../
+
+%test
+    python -c "import tensorflow as tf; print('TensorFlow version:', tf.__version__)"
+
+%runscript
+    exec "$@"
